@@ -40,6 +40,7 @@ frappe_docker/
 ├── images/               # Dockerfiles for building Frappe images
 ├── development/          # Development environment configurations
 ├── devcontainer-example/ # VS Code devcontainer setup
+├── railway/              # Single-service deployment for Railway
 └── resources/            # Helper scripts and configuration templates
 ```
 
@@ -51,6 +52,7 @@ frappe_docker/
 - `overrides/` - Opinionated Compose overrides for common deployment patterns
 - `compose.yaml` - Base compose file for production setups (production)
 - `pwd.yml` - Disposable demo environment (non-production)
+- `railway/` - One-service deployment for [Railway](https://railway.com), see [`railway/README.md`](railway/README.md)
 
 ## Documentation
 
@@ -115,3 +117,4 @@ This repository is only for container related stuff. You also might want to cont
 ## License
 
 This repository is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+# ERP-Next-GRD-IRD
