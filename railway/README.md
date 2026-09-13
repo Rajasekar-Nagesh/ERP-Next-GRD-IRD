@@ -35,13 +35,44 @@ supervisord) and uses managed Railway services for MariaDB and Redis.
 
 ## Setup
 
-### 1. Create the project and databases
+### 1. Create the database service
 
-In a new Railway project add:
+Frappe targets **MariaDB**. Railway's first-party MySQL service is MySQL 8,
+which Frappe does not officially support — do not use it. Postgres works for
+Frappe core, but several apps assume MariaDB; see "Using Postgres" below.
 
-- **MariaDB** — use the MariaDB template (not MySQL: Frappe targets MariaDB).
-  Postgres works too, see "Using Postgres" below.
-- **Redis** — the standard Redis template.
+Rather than a prebuilt template, deploy the same image this repo's Compose
+setup uses, so you control the server flags Frappe requires. Add a service from
+the Docker image:
+
+```
+mariadb:11.8
+```
+
+**Start command** (Railway → Settings → Deploy → Custom Start Command):
+
+```
+mariadbd --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --skip-character-set-client-handshake --bind-address=::
+```
+
+Each flag earns its place:
+
+| Flag | Why |
+| --- | --- |
+| `--character-set-server=utf8mb4`, `--collation-server=utf8mb4_unicode_ci`, `--skip-character-set-client-handshake` | Frappe requires them. Without them `bench new-site` fails, or creates a site that mangles non-ASCII text. They match [`overrides/compose.mariadb.yaml`](../overrides/compose.mariadb.yaml). |
+| `--bind-address=::` | Railway's private network is IPv6-only. The image defaults to binding IPv4, so the app service cannot reach it without this. |
+
+**Variables** on the database service:
+
+```
+MARIADB_ROOT_PASSWORD=<pick a strong password>
+MARIADB_AUTO_UPGRADE=1
+```
+
+**Volume:** attach one mounted at `/var/lib/mysql`. Without it, every redeploy
+of the database wipes your data.
+
+Then add a **Redis** service from the standard Redis template.
 
 ### 2. Create the app service
 
@@ -77,6 +108,12 @@ REDIS_CACHE=${{Redis.REDIS_PRIVATE_URL}}
 REDIS_QUEUE=${{Redis.REDIS_PRIVATE_URL}}
 ```
 
+The app connects as **root** because `bench new-site` has to `CREATE DATABASE`
+and `CREATE USER` — a per-site user is created for you and is what the site
+actually runs as afterwards. The official MariaDB image allows root from any
+host by default (`MARIADB_ROOT_HOST` defaults to `%`); if you narrow that, the
+app service will not be able to create the site.
+
 `DB_*` and `REDIS_*` can be omitted if the database and Redis variables are
 already shared into the service — the entrypoint falls back to `MYSQLHOST`,
 `MYSQLPORT`, `MYSQLUSER`, `MYSQLPASSWORD` and `REDIS_PRIVATE_URL`/`REDIS_URL`.
@@ -108,7 +145,50 @@ deploy*. If the site already exists under the Railway domain, rename it with
 
 Set `DB_TYPE=postgres` and point `DB_HOST`/`DB_PORT`/`DB_ROOT_USER`/
 `DB_ROOT_PASSWORD` at the Postgres service (or let `PGHOST`/`PGPORT`/`PGUSER`/
-`PGPASSWORD` supply them). Note that some Frappe apps assume MariaDB.
+`PGPASSWORD` supply them). No other change is needed — the entrypoint passes
+`--db-type postgres` to `bench new-site` and skips the MariaDB-only flags.
+
+Frappe framework supports Postgres, but it is the less-travelled path: ERPNext
+and many third-party apps are developed against MariaDB, and some queries and
+patches assume it. Prefer MariaDB unless you have a specific reason not to.
+
+### Supabase
+
+Supabase is managed Postgres, so it works through the same `DB_TYPE=postgres`
+path. Frappe uses none of Supabase's auth, storage or realtime features — you
+are using it purely as a Postgres host.
+
+Take the connection details from **Project Settings → Database** and set them
+on the Railway app service:
+
+```
+DB_TYPE=postgres
+DB_HOST=db.<project-ref>.supabase.co
+DB_PORT=5432
+DB_ROOT_USER=postgres
+DB_ROOT_PASSWORD=<your database password>
+```
+
+Four things to check before committing to this:
+
+1. **Use a direct connection, not the transaction pooler.** `bench new-site`
+   issues `CREATE DATABASE` and `CREATE ROLE`, which the transaction-mode
+   pooler (port 6543) will not carry. If you use the session pooler instead,
+   the host and username differ (`aws-0-<region>.pooler.supabase.com`, user
+   `postgres.<project-ref>`) — copy them exactly from the dashboard.
+2. **Frappe creates a database per site.** Supabase is built around one managed
+   database per project; an extra database created by `bench` sits outside what
+   the dashboard, backups and pooler manage. Verify your `postgres` role has
+   `CREATEDB` and `CREATEROLE` before the first deploy.
+3. **Supabase direct connections may be IPv6-only** depending on your project
+   and plan, which affects whether Railway can reach them. If the deploy hangs
+   at the database step, this is the first thing to test.
+4. **Backups are yours to arrange.** Frappe's own `bench backup` still works
+   and is what restores a site; Supabase's snapshots cover the database only.
+
+Given points 1–3, Railway's own Postgres service is the simpler choice if you
+just want Postgres. Supabase earns its place when you want its dashboard, SQL
+editor or existing project alongside Frappe.
 
 ## Custom apps
 
