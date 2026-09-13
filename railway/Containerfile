@@ -1,0 +1,53 @@
+# Railway single-service image for Frappe/ERPNext.
+#
+# Railway runs one container per service and cannot share a volume between
+# services, so the whole bench (nginx, gunicorn, socket.io, workers, scheduler)
+# runs in this one container under supervisord, while MariaDB/Postgres and Redis
+# are provisioned as separate Railway services.
+#
+# Build context is the repository root, see railway.json.
+
+ARG FRAPPE_IMAGE=frappe/erpnext
+ARG FRAPPE_TAG=v16.34.2
+
+FROM ${FRAPPE_IMAGE}:${FRAPPE_TAG}
+
+USER root
+
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y \
+    supervisor \
+    gosu \
+    && rm -rf /var/lib/apt/lists/*
+
+# nginx template with a configurable listen port, Railway injects PORT
+COPY resources/core/nginx/nginx-template.conf /templates/nginx/frappe.conf.template
+RUN sed -i 's/listen 8080;/listen ${PORT};/' /templates/nginx/frappe.conf.template
+
+COPY railway/nginx-entrypoint.sh /usr/local/bin/railway-nginx.sh
+COPY railway/entrypoint.sh /usr/local/bin/railway-entrypoint.sh
+COPY railway/supervisord.conf /etc/supervisor/railway.conf
+
+RUN chmod 755 /usr/local/bin/railway-nginx.sh /usr/local/bin/railway-entrypoint.sh \
+    && mkdir -p /home/frappe/frappe-bench/logs \
+    && chown -R frappe:frappe /home/frappe/frappe-bench/logs \
+    # supervisord calls bench by absolute path, make sure that path is right
+    && BENCH_BIN="$(command -v bench)" \
+    && [ "$BENCH_BIN" = /usr/local/bin/bench ] || ln -sf "$BENCH_BIN" /usr/local/bin/bench
+
+WORKDIR /home/frappe/frappe-bench
+
+# HOME matters because the entrypoint starts as root and drops to frappe.
+ENV HOME=/home/frappe \
+    PORT=8080 \
+    SOCKETIO_PORT=9000 \
+    BACKEND=127.0.0.1:8000 \
+    SOCKETIO=127.0.0.1:9000 \
+    UPSTREAM_REAL_IP_ADDRESS=0.0.0.0/0 \
+    UPSTREAM_REAL_IP_HEADER=X-Forwarded-For \
+    UPSTREAM_REAL_IP_RECURSIVE=off
+
+# Starts as root only to fix ownership of the mounted Railway volume, then
+# drops to the frappe user via gosu.
+ENTRYPOINT ["/usr/local/bin/railway-entrypoint.sh"]
+CMD ["supervisord", "-c", "/etc/supervisor/railway.conf", "-n"]
